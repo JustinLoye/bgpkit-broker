@@ -475,6 +475,12 @@ pub async fn start_api_service(
         .route("/missing_collectors", get(missing_collectors))
         .route("/events", get(events))
         .route("/metrics", get(|| async move { metric_handle.render() }))
+        .route("/bgpstream", get(bgpstream))
+        .route("/data", get(bgpstream))
+        .route("/meta/collectors", get(meta_stub))
+        .route("/meta/collectors/{name}", get(meta_stub))
+        .route("/meta/projects", get(meta_stub))
+        .route("/meta/projects/{name}", get(meta_stub))
         .with_state(state)
         .layer(metric_layer)
         .layer(
@@ -636,4 +642,183 @@ mod tests {
 
         assert!(event_stream.next().await.is_none());
     }
+}
+
+use serde::de::{self, Deserializer};
+
+fn deserialize_string_or_vec_opt<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct StringOrVec;
+    impl<'de> de::Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("string or sequence of strings")
+        }
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(vec![value.to_string()])
+        }
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element()? {
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_any(StringOrVec).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BgpstreamQuery {
+    #[serde(default)]
+    pub human: Option<String>,
+    #[serde(rename = "collectors[]", deserialize_with = "deserialize_string_or_vec_opt", default)]
+    pub collectors: Option<Vec<String>>,
+    #[serde(rename = "projects[]", deserialize_with = "deserialize_string_or_vec_opt", default)]
+    pub projects: Option<Vec<String>>,
+    #[serde(rename = "types[]", deserialize_with = "deserialize_string_or_vec_opt", default)]
+    pub types: Option<Vec<String>>,
+    #[serde(rename = "resourceTypes[]", deserialize_with = "deserialize_string_or_vec_opt", default)]
+    pub resource_types: Option<Vec<String>>,
+    #[serde(rename = "intervals[]", deserialize_with = "deserialize_string_or_vec_opt", default)]
+    pub intervals: Option<Vec<String>>,
+    #[serde(default)]
+    pub minInitialTime: Option<i64>,
+    #[serde(default)]
+    pub dataAddedSince: Option<i64>,
+}
+
+
+
+/// Stub for /meta/collectors and /meta/projects — bgpreader calls these before /data
+async fn meta_stub() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({
+        "time": chrono::Utc::now().timestamp(),
+        "type": "meta",
+        "error": null,
+        "queryParameters": {},
+        "data": {}
+    })))
+}
+
+pub async fn bgpstream(
+    query: Query<BgpstreamQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    // Map bgpstream params to internal search
+    let collectors = query.collectors.clone().unwrap_or_default();
+    let projects = query.projects.clone().unwrap_or_default();
+    let types = query.types.clone().unwrap_or_default();
+    let resource_types = query.resource_types.clone().unwrap_or_default();
+    let intervals = query.intervals.clone().unwrap_or_default();
+    let min_initial_time = query.minInitialTime;
+    let data_added_since = query.dataAddedSince;
+    
+    // Only support ribs/updates, batch for now
+    // Normalize bgpstream "ribs" to broker DB "rib"
+    let data_type = types.first().map(|t| if t == "ribs" { "rib".to_string() } else { t.clone() });
+    let project = projects.first().cloned();
+    let human_flag = query.human.as_deref() == Some("true");
+    
+    // Parse intervals
+    let (interval_ts_start, ts_end) = if let Some(iv) = intervals.first() {
+        let parts: Vec<&str> = iv.split(',').collect();
+        if parts.len() == 2 {
+            let start = parts[0].parse::<i64>().ok();
+            let end = parts[1].parse::<i64>().ok();
+            (
+                // Go back one file duration (15 min updates = 900 seconds) to catch overlapping start
+                start.and_then(|s| DateTime::from_timestamp(s - 100, 0).map(|dt| dt.naive_utc())),
+                // Go forward one file duration to catch overlapping end
+                end.and_then(|e| DateTime::from_timestamp(e + 100, 0).map(|dt| dt.naive_utc())),
+            )
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
+    // Use the interval ts_start directly for the DB query (includes its own lookback logic).
+    // minInitialTime is applied as a strict post-filter below to exclude already-paginated items.
+    let ts_start = interval_ts_start;
+    
+    let search_result = state
+        .database
+        .search(
+            if !collectors.is_empty() { Some(collectors.clone()) } else { None },
+            project.clone(),
+            data_type.clone(),
+            ts_start,
+            ts_end,
+            Some(1),
+            Some(1000),
+        )
+        .await;
+    
+    let mut resources = vec![];
+    if let Ok(result) = search_result {
+        for item in result.items.into_iter().filter(|item| {
+            // Strictly exclude items already seen in previous pagination pages.
+            // bgpreader sets minInitialTime = lastInitialTime + duration after each page.
+            min_initial_time.map_or(true, |mit| item.ts_start.timestamp() > mit)
+        }) {
+            let is_rib = item.data_type == "rib";
+            // RIBs have ts_end == ts_start in the DB (duration=0), but bgpreader uses
+            // initialTime + duration to compute minInitialTime for pagination.
+            // With duration=0 it loops forever, so we match CAIDA which returns 120s for all RIBs.
+            let duration = if is_rib {
+                120i64
+            } else {
+                (item.ts_end - item.ts_start).num_seconds()
+            };
+            // bgpreader expects "ribs" (plural) to match the request type
+            let type_str = if is_rib { "ribs" } else { &item.data_type };
+            resources.push(serde_json::json!({
+                "url": item.url,
+                "format": "mrt",
+                "transport": "file",
+                "project": if item.collector_id.starts_with("rrc") { "riperis" } else { "routeviews" },
+                "collector": item.collector_id,
+                "type": type_str,
+                "initialTime": item.ts_start.timestamp(),
+                "duration": duration,
+                "attr": [],
+            }));
+        }
+    }
+    
+    let resp = serde_json::json!({
+        "time": chrono::Utc::now().timestamp(),
+        "type": "data",
+        "error": null,
+        "queryParameters": {
+            "human": human_flag,
+            "projects": projects,
+            "project": project,
+            "collectors": collectors,
+            "collector": collectors.first().cloned(),
+            "types": types,
+            "type": types.first().cloned(),
+            "resourceTypes": resource_types,
+            "resourceType": resource_types.first().cloned(),
+            "minInitialTime": min_initial_time,
+            "dataAddedSince": data_added_since,
+            "intervals": intervals,
+            "debug": {
+                "numResources": resources.len(),
+                "intervals": intervals,
+            }
+        },
+        "data": { "resources": resources },
+    });
+    (StatusCode::OK, Json(resp))
 }
