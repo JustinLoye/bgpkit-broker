@@ -12,10 +12,9 @@ self-hosted bgpkit-broker instance as a drop-in replacement for the CAIDA BGPStr
 `bgpreader`, the BGPStream command-line tool, queries this broker to discover which files to
 download for a given time window and collector.
 
-Unfortunately the CAIDA broker has become unreliable in practice. As of early 2026 it silently
-hangs for RIPE RIS collectors (e.g. `rrc00`) on recent time windows, making it impossible to
-work with RIPE RIS data without a workaround. The project does not appear to be actively
-maintained.
+Unfortunately the CAIDA broker has become unreliable for recent data. As of early 2026 it does not work
+for RIPE RIS collectors (e.g. `rrc00`), making it impossible to
+work with RIPE RIS data without a workaround.
 
 `bgpkit-broker` is a strong alternative:
 
