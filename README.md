@@ -46,7 +46,7 @@ The broker listens on `http://localhost:40064` by default.
 **Via Docker:**
 
 ```bash
-docker run -d -p 40064:40064 bgpkit/bgpkit-broker:latest
+docker compose up
 ```
 
 ### Query the broker directly

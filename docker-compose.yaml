@@ -1,7 +1,6 @@
-version: "3.8"
 services:
   bgpkit-broker:
-    image: bgpkit/bgpkit-broker:latest
+    build: .
     ports:
       - "40064:40064"
     volumes:
