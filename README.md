@@ -59,7 +59,7 @@ curl "http://localhost:40064/search?ts_start=2010-09-01T00:00:00Z&ts_end=2010-09
 curl "http://localhost:40064/data?types[]=updates&collectors[]=route-views.wide&intervals[]=1283299200,1283302800" | jq .
 ```
 
-### Point `bgpreader` at the local broker
+### Point `bgpreader` at the custom broker
 
 Add `-o url=http://localhost:40064` to any `bgpreader` invocation:
 
@@ -72,6 +72,12 @@ bgpreader -d broker \
 # Local broker, drop-in replacement
 bgpreader -d broker \
   -o 'url=http://localhost:40064' \
+  -w '1283299200,1283302800' \
+  -c route-views.wide -t updates -m
+
+# We also host it for demo purpose
+bgpreader -d broker \
+  -o 'url=http://sandbox.ihr.live:40064' \
   -w '1283299200,1283302800' \
   -c route-views.wide -t updates -m
 ```
