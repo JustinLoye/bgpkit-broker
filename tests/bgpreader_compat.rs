@@ -118,6 +118,46 @@ fn bgpreader_multi_collector_line_count(
     Some(output.stdout.iter().filter(|&&b| b == b'\n').count())
 }
 
+/// Like `bgpreader_line_count` but with multiple collectors and types.
+fn bgpreader_multi_type_line_count(
+    broker_url: Option<&str>,
+    time_window: (&str, &str),
+    collectors: &[&str],
+    record_types: &[&str],
+    timeout: Duration,
+) -> Option<usize> {
+    let window_arg = format!("{},{}", time_window.0, time_window.1);
+    let secs = timeout.as_secs().to_string();
+
+    let mut cmd = Command::new("timeout");
+    cmd.arg(&secs).arg("bgpreader").args(["-d", "broker"]);
+    if let Some(url) = broker_url {
+        cmd.args(["-o", &format!("url={url}")]);
+    }
+    cmd.args(["-w", &window_arg]);
+    for c in collectors {
+        cmd.args(["-c", c]);
+    }
+    for t in record_types {
+        cmd.args(["-t", t]);
+    }
+    cmd.arg("-m");
+
+    let output = cmd.output().expect("failed to spawn bgpreader");
+
+    if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        if code == 124 || code == 143 {
+            eprintln!(
+                "bgpreader timed out after {secs}s (broker={broker_url:?}, collectors={collectors:?}, types={record_types:?})"
+            );
+        }
+        return None;
+    }
+
+    Some(output.stdout.iter().filter(|&&b| b == b'\n').count())
+}
+
 /// Run bgpreader against both the local broker and CAIDA, assert they return the
 /// same number of BGP elements, and return that shared count.
 fn assert_parity(
@@ -203,6 +243,40 @@ fn parity_updates_2010_multi_collector() {
     assert_eq!(
         local, caida,
         "local and CAIDA broker returned different counts for multi-collector query"
+    );
+}
+
+// ── Parity test: both ribs and updates simultaneously ─────────────────────
+
+#[test]
+fn parity_both_types_2010_route_views_wide() {
+    // bgpreader sends types[]=updates&types[]=ribs when given -t updates -t ribs.
+    // Window around 08:00 UTC where Route Views has both a RIB dump and updates.
+    let window = ("1283327940", "1283328060"); // 2010-09-01 ~07:59–08:01 UTC
+    let timeout = Duration::from_secs(600);
+
+    let local = bgpreader_multi_type_line_count(
+        Some(LOCAL_BROKER_URL),
+        window,
+        &["route-views.wide", "rrc04"],
+        &["updates", "ribs"],
+        timeout,
+    )
+    .expect("local broker timed out for multi-type query");
+
+    let caida = bgpreader_multi_type_line_count(
+        None,
+        window,
+        &["route-views.wide", "rrc04"],
+        &["updates", "ribs"],
+        timeout,
+    )
+    .expect("CAIDA broker timed out for multi-type query");
+
+    println!("multi-type (ribs+updates) — local: {local}, CAIDA: {caida}");
+    assert_eq!(
+        local, caida,
+        "local and CAIDA broker returned different counts for multi-type query"
     );
 }
 

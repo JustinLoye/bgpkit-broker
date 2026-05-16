@@ -739,8 +739,14 @@ pub async fn bgpstream(
         }
     }
 
-    // Normalize bgpstream "ribs" to broker DB "rib"
-    let data_type = types.first().map(|t| if t == "ribs" { "rib".to_string() } else { t.clone() });
+    // Normalize bgpstream "ribs" to broker DB "rib".
+    // If multiple types are requested (e.g. types[]=updates&types[]=ribs), pass None
+    // so the DB returns both.
+    let data_type = if types.len() == 1 {
+        types.first().map(|t| if t == "ribs" { "rib".to_string() } else { t.clone() })
+    } else {
+        None
+    };
     let project = projects.first().cloned();
     
     // Parse intervals
