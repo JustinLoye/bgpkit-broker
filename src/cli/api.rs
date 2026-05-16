@@ -1,5 +1,5 @@
 use crate::utils::get_missing_collectors;
-use axum::extract::{Query, State};
+use axum::extract::{Query, RawQuery, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -710,23 +710,38 @@ async fn meta_stub() -> impl IntoResponse {
 }
 
 pub async fn bgpstream(
-    query: Query<BgpstreamQuery>,
+    RawQuery(raw_query): RawQuery,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // Map bgpstream params to internal search
-    let collectors = query.collectors.clone().unwrap_or_default();
-    let projects = query.projects.clone().unwrap_or_default();
-    let types = query.types.clone().unwrap_or_default();
-    let resource_types = query.resource_types.clone().unwrap_or_default();
-    let intervals = query.intervals.clone().unwrap_or_default();
-    let min_initial_time = query.minInitialTime;
-    let data_added_since = query.dataAddedSince;
-    
-    // Only support ribs/updates, batch for now
+    // Parse repeated query params (e.g. collectors[]=a&collectors[]=b) manually
+    // since serde_urlencoded rejects duplicate keys.
+    let qs = raw_query.unwrap_or_default();
+    let mut collectors: Vec<String> = vec![];
+    let mut projects: Vec<String> = vec![];
+    let mut types: Vec<String> = vec![];
+    let mut resource_types: Vec<String> = vec![];
+    let mut intervals: Vec<String> = vec![];
+    let mut min_initial_time: Option<i64> = None;
+    let mut data_added_since: Option<i64> = None;
+    let mut human_flag = false;
+
+    for (key, value) in form_urlencoded::parse(qs.as_bytes()) {
+        match key.as_ref() {
+            "collectors[]" => collectors.push(value.into_owned()),
+            "projects[]" => projects.push(value.into_owned()),
+            "types[]" => types.push(value.into_owned()),
+            "resourceTypes[]" => resource_types.push(value.into_owned()),
+            "intervals[]" => intervals.push(value.into_owned()),
+            "minInitialTime" => min_initial_time = value.parse().ok(),
+            "dataAddedSince" => data_added_since = value.parse().ok(),
+            "human" => human_flag = value.as_ref() == "true",
+            _ => {}
+        }
+    }
+
     // Normalize bgpstream "ribs" to broker DB "rib"
     let data_type = types.first().map(|t| if t == "ribs" { "rib".to_string() } else { t.clone() });
     let project = projects.first().cloned();
-    let human_flag = query.human.as_deref() == Some("true");
     
     // Parse intervals
     let (interval_ts_start, ts_end) = if let Some(iv) = intervals.first() {

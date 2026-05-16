@@ -291,6 +291,7 @@ dependencies = [
  "clap",
  "dirs",
  "dotenvy",
+ "form_urlencoded",
  "futures",
  "futures-util",
  "http",

@@ -81,6 +81,43 @@ fn bgpreader_line_count(
     Some(output.stdout.iter().filter(|&&b| b == b'\n').count())
 }
 
+/// Like `bgpreader_line_count` but with multiple collectors (multiple -c flags).
+fn bgpreader_multi_collector_line_count(
+    broker_url: Option<&str>,
+    time_window: (&str, &str),
+    collectors: &[&str],
+    record_type: &str,
+    timeout: Duration,
+) -> Option<usize> {
+    let window_arg = format!("{},{}", time_window.0, time_window.1);
+    let secs = timeout.as_secs().to_string();
+
+    let mut cmd = Command::new("timeout");
+    cmd.arg(&secs).arg("bgpreader").args(["-d", "broker"]);
+    if let Some(url) = broker_url {
+        cmd.args(["-o", &format!("url={url}")]);
+    }
+    cmd.args(["-w", &window_arg]);
+    for c in collectors {
+        cmd.args(["-c", c]);
+    }
+    cmd.args(["-t", record_type, "-m"]);
+
+    let output = cmd.output().expect("failed to spawn bgpreader");
+
+    if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        if code == 124 || code == 143 {
+            eprintln!(
+                "bgpreader timed out after {secs}s (broker={broker_url:?}, collectors={collectors:?}, type={record_type})"
+            );
+        }
+        return None;
+    }
+
+    Some(output.stdout.iter().filter(|&&b| b == b'\n').count())
+}
+
 /// Run bgpreader against both the local broker and CAIDA, assert they return the
 /// same number of BGP elements, and return that shared count.
 fn assert_parity(
@@ -132,6 +169,40 @@ fn parity_ribs_2010_route_views_sydney() {
         "route-views.sydney",
         "ribs",
         Duration::from_secs(600),
+    );
+}
+
+// ── Parity test: multiple collectors in a single query ────────────────────
+
+#[test]
+fn parity_updates_2010_multi_collector() {
+    // bgpreader sends collectors[]=a&collectors[]=b when given multiple -c flags.
+    // This exercises the repeated-key query string parsing.
+    let window = (WIN_2010_START, WIN_2010_END);
+    let timeout = Duration::from_secs(180);
+
+    let local = bgpreader_multi_collector_line_count(
+        Some(LOCAL_BROKER_URL),
+        window,
+        &["route-views.wide", "rrc04"],
+        "updates",
+        timeout,
+    )
+    .expect("local broker timed out for multi-collector query");
+
+    let caida = bgpreader_multi_collector_line_count(
+        None,
+        window,
+        &["route-views.wide", "rrc04"],
+        "updates",
+        timeout,
+    )
+    .expect("CAIDA broker timed out for multi-collector query");
+
+    println!("multi-collector updates — local: {local}, CAIDA: {caida}");
+    assert_eq!(
+        local, caida,
+        "local and CAIDA broker returned different counts for multi-collector query"
     );
 }
 

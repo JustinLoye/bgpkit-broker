@@ -65,6 +65,7 @@ tokio = { version = "1", optional = true, features = ["full"] }
 
 # api dependencies
 axum = { version = "0.8", optional = true }
+form_urlencoded = { version = "1", optional = true }
 tower-http = { version = "0.6", optional = true, features = ["cors"] }
 http = { version = "1.0", optional = true }
 axum-prometheus = { version = "0.9.0", optional = true }
@@ -103,6 +104,7 @@ cli = [
     # API
     "axum",
     "axum-prometheus",
+    "form_urlencoded",
     "http",
     "tower-http",
     # SSE
