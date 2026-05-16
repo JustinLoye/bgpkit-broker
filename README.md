@@ -84,25 +84,14 @@ bgpreader -d broker \
 
 ## Testing
 
-Compatibility with `bgpreader` is verified by an integration test suite in
-[`tests/bgpreader_compat.rs`](tests/bgpreader_compat.rs). Each test runs `bgpreader` twice,
-once against the local broker and once against CAIDA, and asserts that both return exactly the
-same number of BGP elements. The test matrix covers:
+Two integration test suites verify correctness against the CAIDA broker:
 
-| Scenario | Collectors | Window | Record type |
-|---|---|---|---|
-| 1-hour window | `route-views.wide`, `route-views.sydney` | 2010-09-01 00:00–01:00 UTC | updates, ribs |
-| 4-hour window (2 bgpreader chunks) | `route-views.wide`, `rrc04` | 2010-09-01 00:00–04:00 UTC | updates |
-| 9-hour window (4 bgpreader chunks) | `route-views.wide`, `rrc04` | 2010-09-01 00:00–09:00 UTC | ribs |
+**[`tests/bgpreader_compat.rs`](tests/bgpreader_compat.rs)** — Runs `bgpreader` against both the local and CAIDA brokers, asserts identical element counts. Covers single/multiple collectors, single/multiple data types, and multi-chunk time windows (exercising bgpreader's internal 2-hour pagination via `minInitialTime`).
 
-The multi-chunk tests are specifically designed to exercise bgpreader's internal 2-hour
-pagination (the `minInitialTime` parameter).
-
-A separate test (`local_broker_rrc00_updates_feb2026_returns_data`) confirms that the local
-broker returns data for the RIPE RIS window where CAIDA is known to hang.
-
-**Run the tests** (broker must be running on port 40064, internet access required):
+**[`tests/stream_consistency.rs`](tests/stream_consistency.rs)** — Parses the full bgpreader output from the local broker and verifies that every record has an expected collector, expected type (rib/update), and a timestamp within the query window. Asserts exact per-collector per-type element counts.
 
 ```bash
+# Run all tests (broker must be running on port 40064, internet required for parity tests):
 cargo test --test bgpreader_compat -- --nocapture
+cargo test --test stream_consistency -- --nocapture
 ```
